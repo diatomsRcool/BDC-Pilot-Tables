@@ -51,6 +51,10 @@ COHORT_ORDER = ["ARIC", "CARDIA", "CHS", "COPDGene", "FHS", "HCHS", "JHS", "MESA
 # even if some cohorts classify them under a categorical BDCHM class.
 FORCE_CONTINUOUS = {"edu_lvl", "fam_income"}
 
+# Variable files that should always appear in the Procedures categorical row,
+# even if some cohorts classify them under a different BDCHM class.
+FORCE_PROCEDURES = {"pacem_stat"}
+
 # Variable files excluded from the Conditions row only.
 # They may still appear in other categorical rows (Drug Exposures, Procedures)
 # if other cohorts classify them differently.
@@ -99,6 +103,9 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
 
     # Force certain variable files to continuous regardless of BDCHM class
     merged.loc[merged["variable_file"].isin(FORCE_CONTINUOUS), "row_category"] = "Continuous variables"
+
+    # Force certain variable files to Procedures regardless of BDCHM class
+    merged.loc[merged["variable_file"].isin(FORCE_PROCEDURES), "row_category"] = "Procedures"
 
     # Drop excluded files from Conditions only
     merged = merged[
