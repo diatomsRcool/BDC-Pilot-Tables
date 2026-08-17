@@ -126,6 +126,12 @@ def parse_var_report(xml_path: Path) -> dict[str, int]:
 
     for variable in root.iter("variable"):
         var_id = variable.get("id", "")
+        # Skip consent-group-specific entries (e.g., phv00100285.v1.p1.c1).
+        # These are subsets of participants within a consent group and always
+        # follow the base entry. Using the base entry gives the total across
+        # all consent groups.
+        if re.search(r"\.c\d+$", var_id):
+            continue
         # Strip version: phv00022796.v1.p1 -> phv00022796
         phv_base = var_id.split(".")[0]
         if not phv_base.startswith("phv"):
