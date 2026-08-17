@@ -37,11 +37,11 @@ Note: LTRC-ingest and SPIROMICS-ingest exist in the repo but are not in scope fo
 
 | Section | Rows | How aggregated |
 |---|---|---|
-| Categorical | Conditions, Drug Exposures, Procedures, SdohObservations | Collapsed by BDCHM class |
-| Continuous | One row per harmonized concept (98 concepts, alphabetical) | Per variable_file stem |
+| Categorical | Conditions, Drug Exposures, Procedures | Collapsed by BDCHM class |
+| Continuous | One row per harmonized concept (99 concepts, alphabetical) | Per variable_file stem |
 | Total | Grand total | Sum of all rows |
 
-**Total: 105 rows** (4 categorical + 100 continuous + 1 total)
+**Total: 103 rows** (3 categorical + 99 continuous + 1 total)
 
 ### Column structure
 
@@ -55,12 +55,17 @@ Final two columns: **Total n vars** and **Total n data pts** across all cohorts.
 
 | | Total n vars | Total n data pts |
 |---|---|---|
-| Conditions | 2,075 | 17,889,081 |
+| Conditions | 1,990 | 17,186,916 |
 | Drug Exposures | 1,289 | 5,289,932 |
-| Procedures | 73 | 1,487,492 |
-| SdohObservations | 51 | 659,012 |
-| Continuous (100 concepts) | 4,995 | 44,036,972 |
-| **Grand total** | **8,483** | **69,362,489** |
+| Procedures | 86 | 1,525,372 |
+| Continuous (99 concepts) | 5,035 | 44,702,148 |
+| **Grand total** | **8,400** | **68,704,368** |
+
+### Row classification overrides (applied in 03_build_table.py)
+
+- `edu_lvl` and `fam_income` are forced to continuous rows — some cohorts classify them as `SdohObservation` but they appear as their own concept rows for consistency
+- `pacem_stat` is forced to Procedures — some cohorts (ARIC, HCHS, MESA) use `MeasurementObservation` but WHI uses `Procedure`; all cohorts are grouped under Procedures
+- `chr_bronchitis`, `emphysema`, `hypert_trt`, `hist_cor_bypg` are excluded from the Conditions row; `hypert_trt` and `hist_cor_bypg` remain in Drug Exposures and Procedures respectively where other cohorts classify them there
 
 ### Known limitations
 
