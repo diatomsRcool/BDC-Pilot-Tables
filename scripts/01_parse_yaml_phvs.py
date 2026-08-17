@@ -64,12 +64,9 @@ OBSERVATION_SET_FILES = {"spirometry"}
 # Map OMOP observation_type codes to concept row labels for spirometry sub-observations.
 # Codes not listed here are ignored (e.g., % predicted values).
 SPIROMETRY_OMOP_MAP = {
-    "OMOP:4176265": "fev1",
-    "OMOP:3002094": "fev1",
-    "OMOP:4241837": "fvc",
-    "OMOP:3022891": "fvc",
+    "OMOP:4241837": "fev1",
+    "OMOP:4176265": "fvc",
     "OMOP:3011505": "fev1_fvc",
-    "OMOP:3024594": "fev1_fvc",
 }
 
 # phv numbers are exactly 8 digits after "phv"
