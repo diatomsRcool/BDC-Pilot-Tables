@@ -42,6 +42,7 @@ SKIP_FILES = {
     "visit.yaml",
     "person.yaml",
     "researchstudy.yaml",
+    "research_study.yaml",   # alternate filename used in some cohorts
     "demography.yaml",
 }
 
@@ -61,6 +62,10 @@ CONTINUOUS_ROW = "Continuous variables"
 PHV_RE = re.compile(r"\bphv\d{8}\b")
 # pht table identifiers (6-7 digits after "pht")
 PHT_RE = re.compile(r"\bpht\d{6,7}\b")
+# phv inside curly braces (as used in expressions)
+PHV_IN_BRACES_RE = re.compile(r"\{(phv\d{8})\}")
+# uuid5( call opener
+UUID5_RE = re.compile(r"\buuid5\s*\(", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------
@@ -81,13 +86,49 @@ def find_all_phvs(obj) -> set:
     return phvs
 
 
+def find_uuid5_phvs(expr_str: str) -> set:
+    """
+    Return phv numbers that appear inside uuid5() calls in an expression string.
+
+    These are the true identifier phvs (participant/visit IDs). Phvs that
+    appear elsewhere in the expression (e.g., in case() filter conditions)
+    are NOT returned and should not be excluded from the data phv set.
+    """
+    phvs = set()
+    for m in UUID5_RE.finditer(expr_str):
+        # Walk forward from the opening '(' to find the matching ')'
+        start = m.end()
+        depth = 1
+        pos = start
+        while pos < len(expr_str) and depth > 0:
+            if expr_str[pos] == "(":
+                depth += 1
+            elif expr_str[pos] == ")":
+                depth -= 1
+            pos += 1
+        uuid5_content = expr_str[start : pos - 1]
+        phvs.update(PHV_IN_BRACES_RE.findall(uuid5_content))
+    return phvs
+
+
 def find_excluded_phvs(slot_derivations: dict) -> set:
-    """Return phvs that appear only in linkage slots (participant/visit)."""
+    """
+    Return phvs used as identifiers inside uuid5() calls in linkage slots.
+
+    Only phvs inside uuid5() are excluded. Phvs used in case() filter
+    conditions within associated_visit (which also appear in data slots)
+    are intentionally kept.
+    """
     excluded = set()
     for slot_name in LINKAGE_SLOTS:
         slot = slot_derivations.get(slot_name)
-        if slot:
-            excluded.update(find_all_phvs(slot))
+        if isinstance(slot, dict):
+            expr = str(slot.get("expr", "") or "")
+        elif isinstance(slot, str):
+            expr = slot
+        else:
+            continue
+        excluded.update(find_uuid5_phvs(expr))
     return excluded
 
 
