@@ -51,6 +51,11 @@ COHORT_ORDER = ["ARIC", "CARDIA", "CHS", "COPDGene", "FHS", "HCHS", "JHS", "MESA
 # even if some cohorts classify them under a categorical BDCHM class.
 FORCE_CONTINUOUS = {"edu_lvl", "fam_income"}
 
+# Variable files excluded from the Conditions row only.
+# They may still appear in other categorical rows (Drug Exposures, Procedures)
+# if other cohorts classify them differently.
+EXCLUDE_FROM_CONDITIONS = {"chr_bronchitis", "emphysema", "hypert_trt", "hist_cor_bypg"}
+
 # Concept merges: map non-canonical variable_file names to their canonical name.
 # Both variable files represent the same underlying concept across cohorts.
 CONCEPT_MERGE = {
@@ -94,6 +99,14 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
 
     # Force certain variable files to continuous regardless of BDCHM class
     merged.loc[merged["variable_file"].isin(FORCE_CONTINUOUS), "row_category"] = "Continuous variables"
+
+    # Drop excluded files from Conditions only
+    merged = merged[
+        ~(
+            (merged["variable_file"].isin(EXCLUDE_FROM_CONDITIONS))
+            & (merged["row_category"] == "Conditions")
+        )
+    ]
 
     # Apply concept merges: rename non-canonical variable_file names so that
     # cohort-specific synonyms aggregate into a single row.
