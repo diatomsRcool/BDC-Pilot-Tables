@@ -42,11 +42,14 @@ CATEGORICAL_ROWS = [
     "Conditions",
     "Drug Exposures",
     "Procedures",
-    "SdohObservations",
 ]
 
 # Cohort column order (alphabetical)
 COHORT_ORDER = ["ARIC", "CARDIA", "CHS", "COPDGene", "FHS", "HCHS", "JHS", "MESA", "WHI"]
+
+# Variable files that should always appear as continuous concept rows,
+# even if some cohorts classify them under a categorical BDCHM class.
+FORCE_CONTINUOUS = {"edu_lvl", "fam_income"}
 
 # Concept merges: map non-canonical variable_file names to their canonical name.
 # Both variable files represent the same underlying concept across cohorts.
@@ -88,6 +91,9 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
     if len(missing_counts) > 0:
         print(f"WARNING: {len(missing_counts)} phvs have no count (treated as 0):")
         print(missing_counts[["cohort", "row_category", "phv"]].to_string(index=False))
+
+    # Force certain variable files to continuous regardless of BDCHM class
+    merged.loc[merged["variable_file"].isin(FORCE_CONTINUOUS), "row_category"] = "Continuous variables"
 
     # Apply concept merges: rename non-canonical variable_file names so that
     # cohort-specific synonyms aggregate into a single row.
