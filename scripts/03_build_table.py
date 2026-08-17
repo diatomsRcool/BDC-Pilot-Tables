@@ -6,7 +6,7 @@ and export to Excel.
 
 Table structure:
   Rows:    Conditions | Drug Exposures | Procedures | SdohObservations |
-           Continuous variables | Total
+           <one row per continuous variable concept, alphabetical> | Total
   Columns: For each cohort: "n vars" and "n data pts"
            Final two columns: Total n vars | Total n data pts
 
@@ -37,13 +37,12 @@ PHV_CSV = Path("data/phv_by_cohort_class.csv")
 COUNTS_CSV = Path("data/phv_counts.csv")
 OUTPUT_XLSX = Path("tables/before_table.xlsx")
 
-# Row display order
-ROW_ORDER = [
+# Categorical rows — always appear first and are collapsed by BDCHM class
+CATEGORICAL_ROWS = [
     "Conditions",
     "Drug Exposures",
     "Procedures",
     "SdohObservations",
-    "Continuous variables",
 ]
 
 # Cohort column order (alphabetical)
@@ -54,9 +53,11 @@ COHORT_ORDER = ["ARIC", "CARDIA", "CHS", "COPDGene", "FHS", "HCHS", "JHS", "MESA
 # Build the pivot table
 # --------------------------------------------------------------------------
 
-def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame) -> pd.DataFrame:
+def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
     """
     Join phv metadata with counts, then pivot to the publication table format.
+
+    Returns (table_df, n_categorical_rows, continuous_concepts).
     """
     # Merge: left join so we keep all phvs even if count is missing
     merged = phv_df.merge(
@@ -72,54 +73,68 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame) -> pd.DataFrame:
         print(f"WARNING: {len(missing_counts)} phvs have no count (treated as 0):")
         print(missing_counts[["cohort", "row_category", "phv"]].to_string(index=False))
 
-    # Aggregate: per cohort × row_category
-    # n_vars = number of unique phv numbers
-    # n_data_pts = sum of n across those phvs
-    # Note: a phv may appear multiple times in merged (different variable_file /
-    # pht for the same phv within one cohort). Deduplicate at the phv level
-    # before summing to avoid double-counting data points.
-    deduped = merged.drop_duplicates(subset=["cohort", "row_category", "phv"])
+    # Split into categorical and continuous
+    cat_data  = merged[merged["row_category"] != "Continuous variables"]
+    cont_data = merged[merged["row_category"] == "Continuous variables"]
 
-    agg = (
-        deduped.groupby(["cohort", "row_category"])
-        .agg(
-            n_vars=("phv", "nunique"),
-            n_data_pts=("n", "sum"),
-        )
+    # Deduplicate: a phv may appear in multiple derivation blocks / pht tables.
+    # For categorical rows, deduplicate per (cohort, row_category, phv).
+    # For continuous rows, deduplicate per (cohort, variable_file, phv) so each
+    # concept row gets an independent count of its source phvs.
+    cat_deduped  = cat_data.drop_duplicates(subset=["cohort", "row_category", "phv"])
+    cont_deduped = cont_data.drop_duplicates(subset=["cohort", "variable_file", "phv"])
+
+    # Aggregate categorical rows by class
+    cat_agg = (
+        cat_deduped.groupby(["cohort", "row_category"])
+        .agg(n_vars=("phv", "nunique"), n_data_pts=("n", "sum"))
         .reset_index()
+        .rename(columns={"row_category": "row_label"})
     )
 
-    # Pivot to wide format: one column-pair per cohort
-    wide_vars = agg.pivot(index="row_category", columns="cohort", values="n_vars").fillna(0).astype(int)
-    wide_pts  = agg.pivot(index="row_category", columns="cohort", values="n_data_pts").fillna(0).astype(int)
+    # Aggregate continuous rows by variable concept (variable_file)
+    cont_agg = (
+        cont_deduped.groupby(["cohort", "variable_file"])
+        .agg(n_vars=("phv", "nunique"), n_data_pts=("n", "sum"))
+        .reset_index()
+        .rename(columns={"variable_file": "row_label"})
+    )
 
-    # Ensure all cohorts and row categories are present, even if zero
-    wide_vars = wide_vars.reindex(index=ROW_ORDER, columns=COHORT_ORDER, fill_value=0)
-    wide_pts  = wide_pts.reindex(index=ROW_ORDER, columns=COHORT_ORDER, fill_value=0)
+    all_agg = pd.concat([cat_agg, cont_agg], ignore_index=True)
+
+    # Row order: categorical section first, then continuous concepts alphabetically
+    cont_concepts = sorted(cont_data["variable_file"].unique())
+    row_order = CATEGORICAL_ROWS + cont_concepts
+
+    # Pivot to wide format: one column-pair per cohort
+    wide_vars = all_agg.pivot(index="row_label", columns="cohort", values="n_vars").fillna(0).astype(int)
+    wide_pts  = all_agg.pivot(index="row_label", columns="cohort", values="n_data_pts").fillna(0).astype(int)
+
+    wide_vars = wide_vars.reindex(index=row_order, columns=COHORT_ORDER, fill_value=0)
+    wide_pts  = wide_pts.reindex(index=row_order, columns=COHORT_ORDER, fill_value=0)
 
     # Interleave cohort columns: ARIC n vars, ARIC n data pts, CARDIA n vars, ...
-    col_tuples = []
     data_cols = {}
     for cohort in COHORT_ORDER:
-        vars_col = f"{cohort}\nn vars"
-        pts_col  = f"{cohort}\nn data pts"
-        col_tuples.extend([vars_col, pts_col])
-        data_cols[vars_col] = wide_vars[cohort]
-        data_cols[pts_col]  = wide_pts[cohort]
+        data_cols[f"{cohort}\nn vars"]     = wide_vars[cohort]
+        data_cols[f"{cohort}\nn data pts"] = wide_pts[cohort]
 
-    table = pd.DataFrame(data_cols, index=ROW_ORDER)
+    table = pd.DataFrame(data_cols, index=row_order)
 
     # Total columns (sum across all cohorts per row)
-    table["Total\nn vars"]    = wide_vars.sum(axis=1)
+    table["Total\nn vars"]     = wide_vars.sum(axis=1)
     table["Total\nn data pts"] = wide_pts.sum(axis=1)
 
-    # Total row (sum across all row categories per column)
+    # Total row (sum across all row labels per column)
+    # For the total row, sum only the categorical rows + per-concept continuous
+    # rows — this may double-count phvs shared across concepts, but that is
+    # consistent with how each section is independently counted.
     totals = table.sum(axis=0).rename("Total")
     table = pd.concat([table, totals.to_frame().T])
     table.index.name = "Variable Type"
     table = table.reset_index()
 
-    return table
+    return table, len(CATEGORICAL_ROWS), cont_concepts
 
 
 # --------------------------------------------------------------------------
@@ -127,23 +142,26 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 
 HEADER_FILL   = PatternFill("solid", fgColor="2E4057")   # dark blue
-TOTAL_FILL    = PatternFill("solid", fgColor="D6E4F0")   # light blue
-SUBTOTAL_FILL = PatternFill("solid", fgColor="EBF5FB")   # very light blue
+CATEG_FILL    = PatternFill("solid", fgColor="D5E8D4")   # light green — categorical section
+TOTAL_FILL    = PatternFill("solid", fgColor="D6E4F0")   # light blue — grand total row
+SUBTOTAL_FILL = PatternFill("solid", fgColor="EBF5FB")   # very light blue — total columns
 
 HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
 BOLD_FONT   = Font(bold=True, size=10)
 NORMAL_FONT = Font(size=10)
 
-THIN_SIDE   = Side(style="thin", color="AAAAAA")
-THIN_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
-THICK_SIDE  = Side(style="medium", color="666666")
 
+def apply_formatting(ws, n_categorical: int):
+    """
+    Apply formatting to the worksheet after data is written.
 
-def apply_formatting(ws, n_data_rows: int, n_cohort_cols: int):
-    """Apply formatting to the worksheet after data is written."""
-
+    n_categorical: number of categorical rows (Conditions, Drug Exposures, etc.)
+                   These appear in rows 2..(2 + n_categorical - 1) and get a
+                   distinct background to separate them from continuous rows.
+    """
     max_row = ws.max_row
     max_col = ws.max_column
+    total_col_start = max_col - 1  # last two columns are grand totals
 
     # Row 1: header
     for col in range(1, max_col + 1):
@@ -154,15 +172,29 @@ def apply_formatting(ws, n_data_rows: int, n_cohort_cols: int):
 
     # Data rows (rows 2 .. max_row - 1)
     for row in range(2, max_row):
+        is_categorical = row <= (1 + n_categorical)
         for col in range(1, max_col + 1):
             cell = ws.cell(row=row, column=col)
-            cell.font = NORMAL_FONT
-            cell.alignment = Alignment(horizontal="center" if col > 1 else "left",
-                                       vertical="center")
+            cell.alignment = Alignment(
+                horizontal="center" if col > 1 else "left",
+                vertical="center",
+            )
             if col > 1:
                 cell.number_format = "#,##0"
 
-    # Totals row (last row)
+            # Categorical section: bold + green fill
+            if is_categorical:
+                cell.font = BOLD_FONT
+                if col < total_col_start:
+                    cell.fill = CATEG_FILL
+                else:
+                    cell.fill = SUBTOTAL_FILL
+            else:
+                cell.font = NORMAL_FONT
+                if col >= total_col_start:
+                    cell.fill = SUBTOTAL_FILL
+
+    # Totals row (last row): bold + blue fill
     for col in range(1, max_col + 1):
         cell = ws.cell(row=max_row, column=col)
         cell.font = BOLD_FONT
@@ -172,9 +204,8 @@ def apply_formatting(ws, n_data_rows: int, n_cohort_cols: int):
         if col > 1:
             cell.number_format = "#,##0"
 
-    # Total columns (last two columns)
-    total_col_start = max_col - 1
-    for row in range(2, max_row):  # excludes header, totals row already formatted
+    # Total columns (last two) on continuous rows: light blue fill
+    for row in range(2 + n_categorical, max_row):
         for col in range(total_col_start, max_col + 1):
             cell = ws.cell(row=row, column=col)
             cell.font = BOLD_FONT
@@ -182,7 +213,7 @@ def apply_formatting(ws, n_data_rows: int, n_cohort_cols: int):
             cell.number_format = "#,##0"
 
     # Column widths
-    ws.column_dimensions[get_column_letter(1)].width = 22  # Variable Type
+    ws.column_dimensions[get_column_letter(1)].width = 24  # Variable Type
     for col in range(2, max_col + 1):
         ws.column_dimensions[get_column_letter(col)].width = 13
 
@@ -211,10 +242,15 @@ def main():
 
     print(f"Loaded {len(phv_df)} phv rows and {len(counts_df)} count rows")
 
-    table = build_table(phv_df, counts_df)
+    table, n_categorical, cont_concepts = build_table(phv_df, counts_df)
 
-    print("\nBefore table (preview):")
-    print(table.to_string(index=False))
+    print(f"\nTable dimensions: {len(table)} rows x {len(table.columns)} columns")
+    print(f"  Categorical rows: {n_categorical}")
+    print(f"  Continuous concept rows: {len(cont_concepts)}")
+    print(f"  Total row: 1")
+
+    print("\nBefore table (preview — first 10 rows):")
+    print(table.head(10).to_string(index=False))
 
     # Write to Excel
     table.to_excel(OUTPUT_XLSX, sheet_name="Before", index=False)
@@ -222,9 +258,7 @@ def main():
     # Apply formatting
     wb = load_workbook(OUTPUT_XLSX)
     ws = wb["Before"]
-    n_data_rows = len(ROW_ORDER)
-    n_cohort_cols = len(COHORT_ORDER)
-    apply_formatting(ws, n_data_rows, n_cohort_cols)
+    apply_formatting(ws, n_categorical)
     wb.save(OUTPUT_XLSX)
 
     print(f"\nSaved formatted table to {OUTPUT_XLSX}")
