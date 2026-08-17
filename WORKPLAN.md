@@ -181,13 +181,18 @@ dbGAP publishes `.data_dict.xml` files for each study at:
 https://ftp.ncbi.nlm.nih.gov/dbgap/studies/phsXXXXXXX/phsXXXXXXX.vN.pM/
 ```
 
-For each phs accession, download the data dictionary archive and parse the XML files. Each variable entry contains a `reported_values` section with value frequencies for categorical variables. Summing the frequencies of all non-missing codes gives the non-missing count for that phv.
+For each phs accession, download the data dictionary archive and parse the XML files. Each variable entry contains `<total>` (all records) and `<nulls>` (missing records) fields. Non-missing count is simply:
+
+```
+non_missing_n = total - nulls
+```
+
+This avoids any need to identify study-specific missing value codes or parse reported value frequency tables.
 
 ### Notes and limitations
 
-- Data dictionary coverage varies across studies — some phv variables may not have reported value frequencies
-- Missing value codes differ by study (e.g., `.`, `99`, `999`, `"Missing"`) — these must be identified per variable and excluded
-- A mapping from phv number to pht (phenotype table) and phs (study) is needed to locate the correct XML file; this mapping is available in the dbGAP data dictionaries themselves
+- A mapping from phv number to pht (phenotype table) and phs (study) is needed to locate the correct XML file; this mapping is available in the data dictionaries themselves
+- Flag any phv where `total` is zero or absent — these cannot contribute a count and should be reviewed manually rather than silently contributing zero to the totals
 
 ### Output
 
