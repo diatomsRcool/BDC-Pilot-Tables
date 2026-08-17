@@ -48,6 +48,22 @@ CATEGORICAL_ROWS = [
 # Cohort column order (alphabetical)
 COHORT_ORDER = ["ARIC", "CARDIA", "CHS", "COPDGene", "FHS", "HCHS", "JHS", "MESA", "WHI"]
 
+# Concept merges: map non-canonical variable_file names to their canonical name.
+# Both variable files represent the same underlying concept across cohorts.
+CONCEPT_MERGE = {
+    "alcohol":            "alcohol_servings",
+    "basophil_ct":        "basophil_ncnc_bld",
+    "eosinophil_ct":      "eosinophil_ncnc_bld",
+    "fasting_blood_gluc": "fast_gluc_bld",
+    "hrt_rt":             "hrtrt",
+    "insulin_in_blood":   "insulin_blood",
+    "lymphocyte_ct":      "lympho_ct",
+    "mn_art_press":       "mean_art_press",
+    "monocyte_ct":        "monocyte_ncnc_bld",
+    "neutro_ct":          "neutrophil_ct",
+    "rbc":                "rdbld_ct",
+}
+
 
 # --------------------------------------------------------------------------
 # Build the pivot table
@@ -72,6 +88,10 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
     if len(missing_counts) > 0:
         print(f"WARNING: {len(missing_counts)} phvs have no count (treated as 0):")
         print(missing_counts[["cohort", "row_category", "phv"]].to_string(index=False))
+
+    # Apply concept merges: rename non-canonical variable_file names so that
+    # cohort-specific synonyms aggregate into a single row.
+    merged["variable_file"] = merged["variable_file"].replace(CONCEPT_MERGE)
 
     # Split into categorical and continuous
     cat_data  = merged[merged["row_category"] != "Continuous variables"]
