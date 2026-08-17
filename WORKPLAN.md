@@ -41,7 +41,7 @@ Note: LTRC-ingest and SPIROMICS-ingest exist in the repo but are not in scope fo
 | Continuous | One row per harmonized concept (98 concepts, alphabetical) | Per variable_file stem |
 | Total | Grand total | Sum of all rows |
 
-**Total: 103 rows** (4 categorical + 98 continuous + 1 total)
+**Total: 105 rows** (4 categorical + 100 continuous + 1 total)
 
 ### Column structure
 
@@ -59,13 +59,14 @@ Final two columns: **Total n vars** and **Total n data pts** across all cohorts.
 | Drug Exposures | 1,289 | 5,289,932 |
 | Procedures | 73 | 1,487,492 |
 | SdohObservations | 51 | 659,012 |
-| Continuous (all concepts) | 3,796 | 27,134,337 |
-| **Grand total** | **7,284** | **52,459,854** |
+| Continuous (100 concepts) | 4,995 | 44,036,972 |
+| **Grand total** | **8,483** | **69,362,489** |
 
 ### Known limitations
 
 - 21 ARIC phvs (across pht006419, pht006457, pht006480, pht006453, pht012502, pht012811, pht012855) have no public var_report entry and contribute n=0 to data point counts
-- Continuous variable concept rows may share phvs across concepts (rare); the total row sums concept-level counts independently
+- Continuous variable concept rows may share phvs across concepts; the total row sums concept-level counts independently
+- `spirometry.yaml` files use a `MeasurementObservationSet` structure and are parsed specially: sub-observations are mapped to `fev1`, `fvc`, or `fev1_fvc` by OMOP code (OMOP:4241837, OMOP:4176265, OMOP:3011505 respectively); other spirometry measurements (e.g., % predicted) are ignored. phvs from `age_at_observation` slots are included unless they also appear as linkage phvs in `associated_participant`/`associated_visit`
 
 ---
 
