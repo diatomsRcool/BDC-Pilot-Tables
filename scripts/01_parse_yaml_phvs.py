@@ -58,6 +58,20 @@ CLASS_TO_ROW = {
 }
 CONTINUOUS_ROW = "Continuous variables"
 
+# Files that use MeasurementObservationSet and need sub-observation parsing
+OBSERVATION_SET_FILES = {"spirometry"}
+
+# Map OMOP observation_type codes to concept row labels for spirometry sub-observations.
+# Codes not listed here are ignored (e.g., % predicted values).
+SPIROMETRY_OMOP_MAP = {
+    "OMOP:4176265": "fev1",
+    "OMOP:3002094": "fev1",
+    "OMOP:4241837": "fvc",
+    "OMOP:3022891": "fvc",
+    "OMOP:3011505": "fev1_fvc",
+    "OMOP:3024594": "fev1_fvc",
+}
+
 # phv numbers are exactly 8 digits after "phv"
 PHV_RE = re.compile(r"\bphv\d{8}\b")
 # pht table identifiers (6-7 digits after "pht")
@@ -186,6 +200,84 @@ def parse_yaml_file(yaml_path: Path) -> list[dict]:
     return rows, bdchm_class
 
 
+def parse_observation_set_yaml(yaml_path: Path, omop_map: dict) -> list[dict]:
+    """
+    Parse a MeasurementObservationSet YAML file and return one row dict per
+    (concept × data_phv), where concept is determined by the observation_type
+    OMOP code of each sub-observation.
+
+    Sub-observations whose OMOP code is not in omop_map are silently skipped.
+    """
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        return []
+
+    blocks = data if isinstance(data, list) else [data]
+    rows = []
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        class_defs = block.get("class_derivations") or {}
+
+        for class_name, class_def in class_defs.items():
+            if not isinstance(class_def, dict):
+                continue
+
+            # Collect uuid5 phvs to exclude from the parent's linkage slots
+            parent_slots = class_def.get("slot_derivations") or {}
+            excluded_phvs = find_excluded_phvs(parent_slots)
+
+            # pht at the parent block level (used as fallback)
+            parent_pht_matches = PHT_RE.findall(str(class_def.get("populated_from", "")))
+            parent_pht = parent_pht_matches[0] if parent_pht_matches else ""
+
+            # Navigate to the observations list inside slot_derivations
+            observations_slot = parent_slots.get("observations")
+            if not isinstance(observations_slot, dict):
+                continue
+            sub_blocks = observations_slot.get("class_derivations") or []
+            if not isinstance(sub_blocks, list):
+                sub_blocks = [sub_blocks]
+
+            for sub_block in sub_blocks:
+                if not isinstance(sub_block, dict):
+                    continue
+                for sub_class_name, sub_class_def in sub_block.items():
+                    if not isinstance(sub_class_def, dict):
+                        continue
+
+                    # Determine concept from observation_type.value OMOP code
+                    sub_slots = sub_class_def.get("slot_derivations") or {}
+                    obs_type_slot = sub_slots.get("observation_type") or {}
+                    omop_code = obs_type_slot.get("value", "")
+                    concept = omop_map.get(omop_code)
+                    if concept is None:
+                        continue  # skip ignored measurements
+
+                    # pht: prefer sub-observation's own populated_from
+                    sub_pht_matches = PHT_RE.findall(
+                        str(sub_class_def.get("populated_from", ""))
+                    )
+                    pht = sub_pht_matches[0] if sub_pht_matches else parent_pht
+
+                    # Extract all phvs from the sub-observation block, minus linkage phvs
+                    all_phvs = find_all_phvs(sub_class_def)
+                    data_phvs = all_phvs - excluded_phvs
+
+                    for phv in sorted(data_phvs):
+                        rows.append({
+                            "bdchm_class": sub_class_name,
+                            "pht": pht,
+                            "phv": phv,
+                            "concept": concept,
+                        })
+
+    return rows
+
+
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
@@ -231,6 +323,29 @@ def main():
         for yaml_path in yaml_files:
             if yaml_path.name in SKIP_FILES:
                 skipped_files.append(yaml_path.name)
+                continue
+
+            # Special handling for MeasurementObservationSet files (e.g. spirometry):
+            # parse sub-observations and emit one row per concept.
+            if yaml_path.stem in OBSERVATION_SET_FILES:
+                try:
+                    obs_rows = parse_observation_set_yaml(yaml_path, SPIROMETRY_OMOP_MAP)
+                except Exception as e:
+                    print(f"  ERROR parsing {yaml_path.name}: {e}", file=sys.stderr)
+                    continue
+                if not obs_rows:
+                    print(f"  WARNING: no sub-observation phvs found in {yaml_path.name}")
+                    continue
+                for row in obs_rows:
+                    all_rows.append({
+                        "cohort":        cohort,
+                        "phs":           phs,
+                        "bdchm_class":   row["bdchm_class"],
+                        "row_category":  CONTINUOUS_ROW,
+                        "variable_file": row["concept"],
+                        "pht":           row["pht"],
+                        "phv":           row["phv"],
+                    })
                 continue
 
             try:
