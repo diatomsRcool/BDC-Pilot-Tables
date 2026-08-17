@@ -4,8 +4,8 @@
 
 This project produces two publication tables describing the integration of data across long-term biomedical cohorts in dbGAP using the BDCHM data model and the LinkML ecosystem.
 
-- **Before table**: Raw dbGAP variables per cohort, grouped by BDCHM class
-- **After table**: Harmonized output (to be designed after before table is complete)
+- **Before table**: Raw dbGAP variables per cohort, grouped by BDCHM class — **COMPLETE**
+- **After table**: Harmonized output — design pending
 
 Source transform specifications: https://github.com/RTIInternational/NHLBI-BDC-DMC-HV/tree/main/priority_variables_transform
 Variable list: https://docs.google.com/spreadsheets/d/1PDaX266_H0haa0aabMYQ6UNtEKT5-ClMarP0FvNntN8/edit?gid=125829256#gid=125829256
@@ -13,23 +13,21 @@ BDCHM schema: https://github.com/RTIInternational/NHLBI-BDC-DMC-HM
 
 ---
 
-## Cohort to phs Mapping
+## Cohort to phs Mapping (confirmed)
 
 | Directory | Cohort | phs accession |
 |---|---|---|
 | ARIC-ingest | ARIC | phs000280 |
-| FHS-ingest | FHS | phs000007 |
 | CARDIA-ingest | CARDIA | phs000285 |
 | CHS-ingest | CHS | phs000287 |
+| COPDGene-ingest | COPDGene | phs000179 |
+| FHS-ingest | FHS | phs000007 |
 | HCHS-ingest | HCHS/SOL | phs000810 |
 | JHS-ingest | JHS | phs000286 |
-| COPDGene-ingest | COPDGene | phs000179 |
 | MESA-ingest | MESA | phs000209 |
 | WHI-ingest | WHI | phs000200 |
 
 Note: LTRC-ingest and SPIROMICS-ingest exist in the repo but are not in scope for this publication.
-
-**Action**: Confirm this mapping before finalizing column headers.
 
 ---
 
@@ -37,216 +35,158 @@ Note: LTRC-ingest and SPIROMICS-ingest exist in the repo but are not in scope fo
 
 ### Row structure
 
-Each row corresponds to a BDCHM class. All variables of a given class are collapsed into a single row:
+| Section | Rows | How aggregated |
+|---|---|---|
+| Categorical | Conditions, Drug Exposures, Procedures, SdohObservations | Collapsed by BDCHM class |
+| Continuous | One row per harmonized concept (98 concepts, alphabetical) | Per variable_file stem |
+| Total | Grand total | Sum of all rows |
 
-| Row | BDCHM class |
-|---|---|
-| Conditions | `Condition` |
-| Drug Exposures | `DrugExposure` |
-| Procedures | `Procedure` |
-| SdohObservations | `SdohObservation` |
-| Continuous variables | measurement classes (e.g., `Measurement`, `BodyMeasurement`) |
-| **Total** | (grand total row) |
+**Total: 103 rows** (4 categorical + 98 continuous + 1 total)
 
 ### Column structure
 
 For each of the 9 cohorts, two columns:
-1. **n vars**: number of unique phv numbers integrated from that cohort for that class
-2. **n data points**: total non-missing records across all those phv variables
+1. **n vars**: number of unique phv numbers integrated from that cohort
+2. **n data pts**: total non-missing records across those phv variables (sourced from dbGAP var_report.xml `n` attribute)
 
-The final two columns are **Total n vars** and **Total n data points** across all cohorts.
+Final two columns: **Total n vars** and **Total n data pts** across all cohorts.
 
-### Example layout
+### Current output summary
 
-| Variable Type | ARIC n vars | ARIC n pts | FHS n vars | FHS n pts | ... | Total n vars | Total n pts |
-|---|---|---|---|---|---|---|---|
-| Conditions | | | | | | | |
-| Drug Exposures | | | | | | | |
-| Procedures | | | | | | | |
-| SdohObservations | | | | | | | |
-| Continuous variables | | | | | | | |
-| **Total** | | | | | | | |
+| | Total n vars | Total n data pts |
+|---|---|---|
+| Conditions | 2,075 | 17,889,081 |
+| Drug Exposures | 1,289 | 5,289,932 |
+| Procedures | 73 | 1,487,492 |
+| SdohObservations | 51 | 659,012 |
+| Continuous (all concepts) | 3,796 | 27,134,337 |
+| **Grand total** | **7,284** | **52,459,854** |
+
+### Known limitations
+
+- 21 ARIC phvs (across pht006419, pht006457, pht006480, pht006453, pht012502, pht012811, pht012855) have no public var_report entry and contribute n=0 to data point counts
+- Continuous variable concept rows may share phvs across concepts (rare); the total row sums concept-level counts independently
 
 ---
 
-## Step 1: Clone the Transform Repository
+## Step 1: Clone the Transform Repository ✓
 
 ```bash
 git clone https://github.com/RTIInternational/NHLBI-BDC-DMC-HV.git
 ```
 
-Working directory for YAML parsing: `priority_variables_transform/`
+Cloned locally at `./NHLBI-BDC-DMC-HV`. Working directory: `priority_variables_transform/`
 
 ---
 
-## Step 2: Parse YAML Files to Extract phv Numbers
+## Step 2: Parse YAML Files to Extract phv Numbers ✓
 
-Write `scripts/01_parse_yaml_phvs.py`.
+**Script**: `scripts/01_parse_yaml_phvs.py`
+**Output**: `data/phv_by_cohort_class.csv` (columns: cohort, phs, bdchm_class, row_category, variable_file, pht, phv)
 
-### Files to skip (infrastructure, not harmonized variables)
+### Infrastructure files skipped
 
-Within each cohort ingest directory, skip:
-- `participant.yaml`
-- `visit.yaml`
-- `person.yaml`
-- `researchstudy.yaml`
-- `demography.yaml`
+`participant.yaml`, `visit.yaml`, `person.yaml`, `researchstudy.yaml`, `research_study.yaml`, `demography.yaml`
 
-### Logic
+### Key implementation details
 
-For each remaining YAML file in each of the 9 cohort directories:
+- YAML files can be a list of blocks (`- class_derivations:`) or a single dict
+- BDCHM class is the key under `class_derivations`
+- phv numbers in `associated_participant` and `associated_visit` slots are excluded as linkage variables **only if they appear inside `uuid5()` calls** — phvs used in `case()` filter conditions within these slots may also be data variables and are kept
+- Nested class_derivations (e.g., `Quantity` inside `MeasurementObservation`) are captured via recursive extraction
 
-1. Identify the BDCHM class from the `class_derivations` top-level key (e.g., `Condition`, `DrugExposure`, `Procedure`, `SdohObservation`, measurement classes)
-2. Extract all phv numbers (regex: `phv\d{8}`) from the entire file
-3. Extract phv numbers that appear **only** in `associated_participant` and `associated_visit` slot derivation expressions — these are linkage variables, not data variables
-4. Subtract the linkage phv set from the full phv set to get data phv numbers
-5. Deduplicate within each cohort × class combination (a phv may appear in multiple derivation blocks)
+### BDCHM class → row category mapping
 
-### Implementation sketch
-
-```python
-import re, yaml
-from pathlib import Path
-import pandas as pd
-
-PHV_PATTERN = re.compile(r'\bphv\d{8}\b')
-
-SKIP_FILES = {
-    'participant.yaml', 'visit.yaml', 'person.yaml',
-    'researchstudy.yaml', 'demography.yaml'
-}
-
-COHORT_MAP = {
-    'ARIC-ingest': 'phs000280',
-    'FHS-ingest': 'phs000007',
-    'CARDIA-ingest': 'phs000285',
-    'CHS-ingest': 'phs000287',
-    'HCHS-ingest': 'phs000810',
-    'JHS-ingest': 'phs000286',
-    'COPDGene-ingest': 'phs000179',
-    'MESA-ingest': 'phs000209',
-    'WHI-ingest': 'phs000200',
-}
-
-def extract_phvs(yaml_path):
-    with open(yaml_path) as f:
-        raw = f.read()
-    data = yaml.safe_load(raw)
-
-    all_phvs = set(PHV_PATTERN.findall(raw))
-
-    # Find phvs used only for participant/visit linkage
-    excluded_phvs = set()
-    for class_name, class_def in (data.get('class_derivations') or {}).items():
-        for deriv_name, deriv_def in (class_def.get('slot_derivations') or {}).items():
-            if deriv_name in ('associated_participant', 'associated_visit'):
-                expr = str(deriv_def.get('expr', ''))
-                excluded_phvs.update(PHV_PATTERN.findall(expr))
-
-    bdchm_class = list((data.get('class_derivations') or {}).keys())[0] if data.get('class_derivations') else 'Unknown'
-    return bdchm_class, all_phvs - excluded_phvs
-```
-
-### Output
-
-Save to `data/phv_by_cohort_class.csv` with columns:
-`cohort`, `phs`, `bdchm_class`, `variable_file`, `phv`
-
----
-
-## Step 3: Classify Variables by Row Category
-
-Map BDCHM class names to table row labels:
-
-| BDCHM class | Table row |
+| BDCHM class | Row category |
 |---|---|
 | `Condition` | Conditions |
 | `DrugExposure` | Drug Exposures |
 | `Procedure` | Procedures |
 | `SdohObservation` | SdohObservations |
-| All others | Continuous variables |
-
-Cross-reference against the Google Sheets variable list to verify all harmonized concepts are accounted for and no YAML files are miscategorized or missing.
+| All others (e.g., `MeasurementObservation`, `MeasurementObservationSet`) | Continuous variables |
 
 ---
 
-## Step 4: Get Non-Missing Record Counts per phv (dbGAP Data Dictionaries)
+## Step 3: Fetch Non-Missing Record Counts from dbGAP ✓
 
-Write `scripts/02_fetch_counts.py`.
+**Script**: `scripts/02_fetch_counts.py`
+**Output**: `data/phv_counts.csv` (columns: phs, pht, phv, n, count_available)
 
-### Approach: dbGAP public data dictionaries via FTP
+### Approach
 
-dbGAP publishes `.data_dict.xml` files for each study at:
-```
-https://ftp.ncbi.nlm.nih.gov/dbgap/studies/phsXXXXXXX/phsXXXXXXX.vN.pM/
-```
+- dbGAP `var_report.xml` files are downloaded from the NCBI FTP and cached in `data/var_report_cache/{phs}/`
+- FTP base: `https://ftp.ncbi.nlm.nih.gov/dbgap/studies/{phs}/{phs}.vN.pM/pheno_variable_summaries/`
+- The `n` attribute of `<stat>` inside `<total><stats>` gives the non-missing count directly
+- Only var_report files for relevant pht tables are downloaded first; remaining files scanned as fallback for any phvs not yet found
+- Consent-group sub-entries (e.g., `phv00100285.v1.p1.c1`) are skipped; only the base entry (`phv00100285.v1.p1`) is used to avoid overwriting the total count with a subset
 
-For each phs accession, download the data dictionary archive and parse the XML files. Each variable entry contains `<total>` (all records) and `<nulls>` (missing records) fields. Non-missing count is simply:
+### Results
 
-```
-non_missing_n = total - nulls
-```
-
-This avoids any need to identify study-specific missing value codes or parse reported value frequency tables.
-
-### Notes and limitations
-
-- A mapping from phv number to pht (phenotype table) and phs (study) is needed to locate the correct XML file; this mapping is available in the data dictionaries themselves
-- Flag any phv where `total` is zero or absent — these cannot contribute a count and should be reviewed manually rather than silently contributing zero to the totals
-
-### Output
-
-Save to `data/phv_counts.csv` with columns:
-`phv`, `phs`, `non_missing_count`
+- 7,446 / 7,467 phvs (99.7%) successfully matched
+- 21 ARIC phvs not found in any public var_report (treated as n=0, flagged in output)
 
 ---
 
-## Step 5: Build the Before Table
+## Step 4: Build and Export the Before Table ✓
 
-Write `scripts/03_build_table.py`.
+**Script**: `scripts/03_build_table.py`
+**Output**: `tables/before_table.xlsx`
 
-1. Join `phv_by_cohort_class.csv` with `phv_counts.csv` on `phv` + `phs`
-2. Group by `cohort` × `row_category` to compute:
-   - `n_vars` = count of distinct phv numbers
-   - `n_datapoints` = sum of `non_missing_count`
-3. Pivot to wide format (one column pair per cohort)
-4. Append a totals row (sum across all cohorts per class) and totals columns (sum across all classes per cohort)
-5. Add a grand total cell (bottom-right)
+### Logic
+
+1. Apply concept merges (synonym variable names collapsed to one canonical name — see below)
+2. Categorical section: aggregate by `row_category` (cohort × class)
+3. Continuous section: aggregate by `variable_file` concept (one row per concept per cohort)
+4. Deduplicate phvs within each group before summing to avoid double-counting
+5. Pivot to wide format; add total columns and total row
+6. Export to Excel with formatting: dark blue header, green categorical rows, light blue total columns, light blue total row
+
+### Concept merges (synonym pairs collapsed to canonical name)
+
+| Merged away | Canonical |
+|---|---|
+| alcohol | alcohol_servings |
+| basophil_ct | basophil_ncnc_bld |
+| eosinophil_ct | eosinophil_ncnc_bld |
+| fasting_blood_gluc | fast_gluc_bld |
+| hrt_rt | hrtrt |
+| insulin_in_blood | insulin_blood |
+| lymphocyte_ct | lympho_ct |
+| mn_art_press | mean_art_press |
+| monocyte_ct | monocyte_ncnc_bld |
+| neutro_ct | neutrophil_ct |
+| rbc | rdbld_ct |
 
 ---
 
-## Step 6: Export to Excel
-
-Use `pandas` with `openpyxl` to write a formatted Excel file:
-
-```python
-with pd.ExcelWriter('tables/before_table.xlsx', engine='openpyxl') as writer:
-    df.to_excel(writer, sheet_name='Before', index=False)
-    # Apply formatting: bold headers, bold totals row/column, number formatting
-```
-
-Output: `tables/before_table.xlsx`
-
----
-
-## Suggested File Structure
+## File Structure
 
 ```
 BDC-Pilot-Tables/
 ├── WORKPLAN.md
+├── requirements.txt
+├── NHLBI-BDC-DMC-HV/          # cloned transform repo (not committed)
 ├── scripts/
-│   ├── 01_parse_yaml_phvs.py     # Step 2: extract phv numbers from YAML
-│   ├── 02_fetch_counts.py        # Step 4: fetch non-missing counts from dbGAP
-│   └── 03_build_table.py         # Step 5-6: assemble and export table
+│   ├── 01_parse_yaml_phvs.py
+│   ├── 02_fetch_counts.py
+│   └── 03_build_table.py
 ├── data/
-│   ├── phv_by_cohort_class.csv   # output of step 2
-│   └── phv_counts.csv            # output of step 4
+│   ├── phv_by_cohort_class.csv
+│   ├── phv_counts.csv
+│   └── var_report_cache/       # cached dbGAP XML files (not committed)
 └── tables/
     └── before_table.xlsx
+```
+
+To regenerate the table from scratch:
+```bash
+python scripts/01_parse_yaml_phvs.py --repo ./NHLBI-BDC-DMC-HV
+python scripts/02_fetch_counts.py
+python scripts/03_build_table.py
 ```
 
 ---
 
 ## After Table
 
-Design to be determined after the before table is finalized.
+Design to be determined. Will be described by user after before table is finalized.
