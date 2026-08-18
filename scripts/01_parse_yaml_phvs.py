@@ -2,8 +2,8 @@
 01_parse_yaml_phvs.py
 
 Parse all YAML transform specification files for the 9 in-scope cohorts and
-extract the dbGAP phenotype variable (phv) numbers that were integrated,
-excluding phv numbers used only for participant/visit linkage.
+extract the dbGAP phenotype variable (phv) numbers that appear in DATA_SLOTS
+— the slots where actual data values are recorded.
 
 Usage:
     python scripts/01_parse_yaml_phvs.py --repo /path/to/NHLBI-BDC-DMC-HV
@@ -11,6 +11,8 @@ Usage:
 Output:
     data/phv_by_cohort_class.csv
     Columns: cohort, phs, bdchm_class, row_category, variable_file, pht, phv
+
+  All other slot names encountered (metadata slots) are printed at the end.
 """
 
 import argparse
@@ -46,8 +48,19 @@ SKIP_FILES = {
     "demography.yaml",
 }
 
-# Slot names whose phv references are linkage-only (not data variables)
-LINKAGE_SLOTS = {"associated_participant", "associated_visit"}
+# Slots where actual data values are recorded.
+# Only phvs found in these slots are counted (for both n vars and n data pts).
+# Everything else (age_at_observation, associated_visit case-filters, etc.)
+# is treated as metadata and excluded.
+DATA_SLOTS = {
+    "condition_status",
+    "exposure_status",
+    "procedure_status",
+    "value_string",
+    "value_quantity",
+    "value_boolean",
+    "value_enum",
+}
 
 # Map BDCHM class names to table row labels
 CLASS_TO_ROW = {
@@ -73,11 +86,6 @@ SPIROMETRY_OMOP_MAP = {
 PHV_RE = re.compile(r"\bphv\d{8}\b")
 # pht table identifiers (6-7 digits after "pht")
 PHT_RE = re.compile(r"\bpht\d{6,7}\b")
-# phv inside curly braces (as used in expressions)
-PHV_IN_BRACES_RE = re.compile(r"\{(phv\d{8})\}")
-# uuid5( call opener
-UUID5_RE = re.compile(r"\buuid5\s*\(", re.IGNORECASE)
-
 
 # --------------------------------------------------------------------------
 # YAML parsing helpers
@@ -97,50 +105,44 @@ def find_all_phvs(obj) -> set:
     return phvs
 
 
-def find_uuid5_phvs(expr_str: str) -> set:
+def find_data_slot_phvs(obj) -> set:
     """
-    Return phv numbers that appear inside uuid5() calls in an expression string.
+    Recursively walk the YAML structure and return phvs found inside any slot
+    whose name is in DATA_SLOTS.
 
-    These are the true identifier phvs (participant/visit IDs). Phvs that
-    appear elsewhere in the expression (e.g., in case() filter conditions)
-    are NOT returned and should not be excluded from the data phv set.
+    When a DATA_SLOTS key is found, all phvs within that slot's entire subtree
+    are collected (handles value_quantity nested inside MeasurementObservationSet
+    sub-observations). For all other keys the function recurses deeper without
+    collecting phvs.
     """
     phvs = set()
-    for m in UUID5_RE.finditer(expr_str):
-        # Walk forward from the opening '(' to find the matching ')'
-        start = m.end()
-        depth = 1
-        pos = start
-        while pos < len(expr_str) and depth > 0:
-            if expr_str[pos] == "(":
-                depth += 1
-            elif expr_str[pos] == ")":
-                depth -= 1
-            pos += 1
-        uuid5_content = expr_str[start : pos - 1]
-        phvs.update(PHV_IN_BRACES_RE.findall(uuid5_content))
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in DATA_SLOTS:
+                phvs.update(find_all_phvs(value))
+            else:
+                phvs.update(find_data_slot_phvs(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            phvs.update(find_data_slot_phvs(item))
     return phvs
 
 
-def find_excluded_phvs(slot_derivations: dict) -> set:
+def collect_slot_names(obj, result: set) -> None:
     """
-    Return phvs used as identifiers inside uuid5() calls in linkage slots.
-
-    Only phvs inside uuid5() are excluded. Phvs used in case() filter
-    conditions within associated_visit (which also appear in data slots)
-    are intentionally kept.
+    Recursively collect all slot names (keys of slot_derivations dicts)
+    encountered anywhere in the YAML structure.
     """
-    excluded = set()
-    for slot_name in LINKAGE_SLOTS:
-        slot = slot_derivations.get(slot_name)
-        if isinstance(slot, dict):
-            expr = str(slot.get("expr", "") or "")
-        elif isinstance(slot, str):
-            expr = slot
-        else:
-            continue
-        excluded.update(find_uuid5_phvs(expr))
-    return excluded
+    if isinstance(obj, dict):
+        if "slot_derivations" in obj:
+            sd = obj["slot_derivations"]
+            if isinstance(sd, dict):
+                result.update(sd.keys())
+        for v in obj.values():
+            collect_slot_names(v, result)
+    elif isinstance(obj, list):
+        for item in obj:
+            collect_slot_names(item, result)
 
 
 def parse_yaml_file(yaml_path: Path) -> list[dict]:
@@ -181,11 +183,7 @@ def parse_yaml_file(yaml_path: Path) -> list[dict]:
             pht_matches = PHT_RE.findall(str(raw_populated))
             pht = pht_matches[0] if pht_matches else ""
 
-            slot_defs = class_def.get("slot_derivations") or {}
-
-            all_phvs = find_all_phvs(class_def)
-            excluded_phvs = find_excluded_phvs(slot_defs)
-            data_phvs = all_phvs - excluded_phvs
+            data_phvs = find_data_slot_phvs(class_def)
 
             for phv in sorted(data_phvs):
                 rows.append({
@@ -223,15 +221,12 @@ def parse_observation_set_yaml(yaml_path: Path, omop_map: dict) -> list[dict]:
             if not isinstance(class_def, dict):
                 continue
 
-            # Collect uuid5 phvs to exclude from the parent's linkage slots
-            parent_slots = class_def.get("slot_derivations") or {}
-            excluded_phvs = find_excluded_phvs(parent_slots)
-
             # pht at the parent block level (used as fallback)
             parent_pht_matches = PHT_RE.findall(str(class_def.get("populated_from", "")))
             parent_pht = parent_pht_matches[0] if parent_pht_matches else ""
 
             # Navigate to the observations list inside slot_derivations
+            parent_slots = class_def.get("slot_derivations") or {}
             observations_slot = parent_slots.get("observations")
             if not isinstance(observations_slot, dict):
                 continue
@@ -260,9 +255,7 @@ def parse_observation_set_yaml(yaml_path: Path, omop_map: dict) -> list[dict]:
                     )
                     pht = sub_pht_matches[0] if sub_pht_matches else parent_pht
 
-                    # Extract all phvs from the sub-observation block, minus linkage phvs
-                    all_phvs = find_all_phvs(sub_class_def)
-                    data_phvs = all_phvs - excluded_phvs
+                    data_phvs = find_data_slot_phvs(sub_class_def)
 
                     for phv in sorted(data_phvs):
                         rows.append({
@@ -307,6 +300,7 @@ def main():
     all_rows = []
     skipped_files = []
     unknown_class_files = []
+    all_slot_names: set = set()
 
     for dir_name, (cohort, phs) in sorted(COHORT_MAP.items()):
         cohort_dir = transform_root / dir_name
@@ -326,6 +320,10 @@ def main():
             # parse sub-observations and emit one row per concept.
             if yaml_path.stem in OBSERVATION_SET_FILES:
                 try:
+                    with open(yaml_path, encoding="utf-8") as f:
+                        raw_yaml = yaml.safe_load(f)
+                    if raw_yaml:
+                        collect_slot_names(raw_yaml, all_slot_names)
                     obs_rows = parse_observation_set_yaml(yaml_path, SPIROMETRY_OMOP_MAP)
                 except Exception as e:
                     print(f"  ERROR parsing {yaml_path.name}: {e}", file=sys.stderr)
@@ -346,6 +344,10 @@ def main():
                 continue
 
             try:
+                with open(yaml_path, encoding="utf-8") as f:
+                    raw_yaml = yaml.safe_load(f)
+                if raw_yaml:
+                    collect_slot_names(raw_yaml, all_slot_names)
                 rows, bdchm_class = parse_yaml_file(yaml_path)
             except Exception as e:
                 print(f"  ERROR parsing {yaml_path.name}: {e}", file=sys.stderr)
@@ -400,6 +402,11 @@ def main():
     if unknown_class_files:
         print(f"\nWARNING: could not determine BDCHM class for:\n  " +
               "\n  ".join(unknown_class_files))
+
+    metadata_slots = sorted(all_slot_names - DATA_SLOTS)
+    print(f"\nMetadata slots (not in DATA_SLOTS, phvs excluded from count):")
+    for s in metadata_slots:
+        print(f"  {s}")
 
 
 if __name__ == "__main__":
