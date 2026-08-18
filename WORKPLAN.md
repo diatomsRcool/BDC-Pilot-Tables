@@ -193,6 +193,63 @@ python scripts/03_build_table.py
 
 ---
 
+## Quality Control
+
+### Strategies (in suggested priority order)
+
+| Check | Effort | What it catches |
+|---|---|---|
+| Spot-check phv lists against source YAMLs | Low | Parsing errors in 01_parse_yaml_phvs.py |
+| Verify zero cells are truly zero | Low | Missing files / concepts |
+| Check concept merge list for remaining synonyms | Low | Duplicate concept rows |
+| Confirm row classification overrides are correct | Low | Misclassification |
+| Cross-check n data pts against dbGAP directly | Medium | Count errors in 02_fetch_counts.py |
+
+### 1. Spot-check phv lists against source YAMLs
+
+Pick 2–3 cohorts × concept combinations and manually count phvs in the source YAML, then compare to the table. Focus on:
+- A cohort with many phvs per concept (FHS has the most files)
+- One categorical row and one continuous row per cohort
+
+Completed spot-checks:
+- ARIC FEV1: confirmed 7 phvs (4 measurement + 3 age_at_observation) ✓
+- CARDIA alcohol_servings: confirmed 23 phvs ✓
+
+### 2. Verify zero cells are truly zero
+
+The table has many cohort × concept cells with 0 vars. For a sample, confirm the source YAML for that cohort genuinely doesn't exist or doesn't contain that variable. Most suspicious zeros:
+- ARIC `alcohol_servings` (0 vars) — does ARIC have no alcohol variable?
+- FHS `alcohol_servings` (0 vars)
+- Any cohort × concept where all neighbors in the same row have data
+
+### 3. Check concept merge list for remaining synonyms
+
+Scan all continuous variable_file names for pairs that look like the same concept with different names:
+
+```bash
+python3 -c "
+import pandas as pd
+df = pd.read_csv('data/phv_by_cohort_class.csv')
+cont = df[df['row_category']=='Continuous variables']
+print(sorted(cont['variable_file'].unique()))
+"
+```
+
+### 4. Confirm row classification overrides
+
+For each override in `FORCE_CONTINUOUS`, `FORCE_PROCEDURES`, and `EXCLUDE_FROM_CONDITIONS`, spot-check one cohort's YAML to confirm the classification decision is correct.
+
+Current overrides to verify:
+- `edu_lvl`, `fam_income` → continuous (some cohorts use SdohObservation)
+- `pacem_stat` → Procedures (ARIC/HCHS/MESA use MeasurementObservation)
+- `chr_bronchitis`, `emphysema`, `hypert_trt`, `hist_cor_bypg` → excluded from Conditions
+
+### 5. Cross-check n data pts against dbGAP
+
+Pick 5–10 phvs from `data/phv_counts.csv` and verify their `n` values against the dbGAP web interface or the raw var_report XML in `data/var_report_cache/`. The `n` attribute in `<stat>` inside `<total><stats>` of each var_report.xml is the non-missing count used.
+
+---
+
 ## After Table
 
 Design to be determined. Will be described by user after before table is finalized.
