@@ -37,41 +37,54 @@ Note: LTRC-ingest and SPIROMICS-ingest exist in the repo but are not in scope fo
 
 | Section | Rows | How aggregated |
 |---|---|---|
-| Categorical | Conditions, Drug Exposures, Procedures | Collapsed by BDCHM class |
+| Categorical | One row per variable_file within Conditions, Drug Exposures, Procedures (43 concept rows, each section alphabetical) | Per variable_file stem |
 | Continuous | One row per harmonized concept (99 concepts, alphabetical) | Per variable_file stem |
 | Total | Grand total | Sum of all rows |
 
-**Total: 103 rows** (3 categorical + 99 continuous + 1 total)
+**Total: 143 rows** (43 categorical concepts + 99 continuous concepts + 1 total)
 
 ### Column structure
 
 For each of the 9 cohorts, two columns:
-1. **n vars**: number of unique phv numbers integrated from that cohort
-2. **n data pts**: total non-missing records across those phv variables (sourced from dbGAP var_report.xml `n` attribute)
+1. **n vars**: number of unique phv numbers in DATA_SLOTS for that cohort × concept
+2. **n data pts**: total non-missing records for those phv variables (sourced from dbGAP var_report.xml `n` attribute)
 
 Final two columns: **Total n vars** and **Total n data pts** across all cohorts.
 
-### Current output summary
+### phv counting rule — DATA_SLOTS (final)
+
+Only phv numbers found in these YAML slots are counted, for **both** n vars and n data pts:
+
+```
+condition_status, exposure_status, procedure_status,
+value_string, value_quantity, value_boolean, value_enum
+```
+
+All other slots — including `drug_concept`, `condition_concept`, `procedure_concept`, `age_at_observation`, `associated_visit`, `observation_type`, etc. — are **metadata slots**. phvs found only in metadata slots are excluded entirely from the table. Script `01_parse_yaml_phvs.py` prints the full metadata slot list at the end of its output.
+
+**Consequence**: Drug Exposures are zero for cohorts (ARIC, CHS, HCHS, JHS, WHI) whose medication YAML files store data only in `drug_concept`. This is intentional — those phvs describe the type of drug, not a measured value in a data slot.
+
+### Current output summary (approximate)
 
 | | Total n vars | Total n data pts |
 |---|---|---|
-| Conditions | 1,990 | 17,186,916 |
-| Drug Exposures | 1,289 | 5,289,932 |
-| Procedures | 86 | 1,525,372 |
-| Continuous (99 concepts) | 5,035 | 44,702,148 |
-| **Grand total** | **8,400** | **68,704,368** |
+| Conditions (43 concept rows) | ~1,865 | ~17,200,000 |
+| Drug Exposures | ~469 | ~982,000 |
+| Procedures | ~38 | ~487,000 |
+| Continuous (99 concepts) | ~3,616 | ~24,300,000 |
 
 ### Row classification overrides (applied in 03_build_table.py)
 
-- `edu_lvl` and `fam_income` are forced to continuous rows — some cohorts classify them as `SdohObservation` but they appear as their own concept rows for consistency
-- `pacem_stat` is forced to Procedures — some cohorts (ARIC, HCHS, MESA) use `MeasurementObservation` but WHI uses `Procedure`; all cohorts are grouped under Procedures
-- `chr_bronchitis`, `emphysema`, `hypert_trt`, `hist_cor_bypg` are excluded from the Conditions row; `hypert_trt` and `hist_cor_bypg` remain in Drug Exposures and Procedures respectively where other cohorts classify them there
+- `edu_lvl` and `fam_income` are forced to continuous rows — some cohorts classify them as `SdohObservation`
+- `pacem_stat` is forced to Procedures — some cohorts (ARIC, HCHS, MESA) use `MeasurementObservation` but WHI uses `Procedure`
+- `chr_bronchitis`, `emphysema`, `hypert_trt`, `hist_cor_bypg` are excluded from the Conditions row
 
 ### Known limitations
 
-- 21 ARIC phvs (across pht006419, pht006457, pht006480, pht006453, pht012502, pht012811, pht012855) have no public var_report entry and contribute n=0 to data point counts
+- 19 ARIC phvs have no public var_report entry and contribute n=0 to data point counts
 - Continuous variable concept rows may share phvs across concepts; the total row sums concept-level counts independently
-- `spirometry.yaml` files use a `MeasurementObservationSet` structure and are parsed specially: sub-observations are mapped to `fev1`, `fvc`, or `fev1_fvc` by OMOP code (OMOP:4241837, OMOP:4176265, OMOP:3011505 respectively); other spirometry measurements (e.g., % predicted) are ignored. phvs from `age_at_observation` slots are included unless they also appear as linkage phvs in `associated_participant`/`associated_visit`
+- `SdohObservations` is a row_category in the phv CSV but is not shown in the table (not in `CATEGORICAL_SECTION_ORDER` and not classified as continuous)
+- `spirometry.yaml` files use a `MeasurementObservationSet` structure and are parsed specially: sub-observations are mapped to `fev1`, `fvc`, or `fev1_fvc` by OMOP code (OMOP:4241837, OMOP:4176265, OMOP:3011505 respectively); other spirometry measurements (e.g., % predicted) are ignored
 
 ---
 
@@ -98,8 +111,9 @@ Cloned locally at `./NHLBI-BDC-DMC-HV`. Working directory: `priority_variables_t
 
 - YAML files can be a list of blocks (`- class_derivations:`) or a single dict
 - BDCHM class is the key under `class_derivations`
-- phv numbers in `associated_participant` and `associated_visit` slots are excluded as linkage variables **only if they appear inside `uuid5()` calls** — phvs used in `case()` filter conditions within these slots may also be data variables and are kept
-- Nested class_derivations (e.g., `Quantity` inside `MeasurementObservation`) are captured via recursive extraction
+- phv extraction uses `find_data_slot_phvs()`: recursively walks the YAML structure and collects phvs only from slots whose name is in DATA_SLOTS; all other slots are ignored entirely
+- This correctly handles nested structures (e.g., `value_quantity` inside `MeasurementObservationSet > observations > MeasurementObservation`) because the recursion descends through non-data-slot keys
+- Script prints all metadata slot names encountered (slot names not in DATA_SLOTS) at the end of its output for transparency
 
 ### BDCHM class → row category mapping
 
@@ -141,9 +155,9 @@ Cloned locally at `./NHLBI-BDC-DMC-HV`. Working directory: `priority_variables_t
 ### Logic
 
 1. Apply concept merges (synonym variable names collapsed to one canonical name — see below)
-2. Categorical section: aggregate by `row_category` (cohort × class)
+2. Categorical section: aggregate by `variable_file` (one row per concept per cohort, grouped by section: Conditions → Drug Exposures → Procedures, each alphabetical)
 3. Continuous section: aggregate by `variable_file` concept (one row per concept per cohort)
-4. Deduplicate phvs within each group before summing to avoid double-counting
+4. Deduplicate phvs within each group (per cohort × variable_file × phv) before summing to avoid double-counting across derivation blocks
 5. Pivot to wide format; add total columns and total row
 6. Export to Excel with formatting: dark blue header, green categorical rows, light blue total columns, light blue total row
 
@@ -153,15 +167,30 @@ Cloned locally at `./NHLBI-BDC-DMC-HV`. Working directory: `priority_variables_t
 |---|---|
 | alcohol | alcohol_servings |
 | basophil_ct | basophil_ncnc_bld |
+| blood_clots | ven_thromb |
+| chd | cvd |
 | eosinophil_ct | eosinophil_ncnc_bld |
+| fam_stroke | stroke |
 | fasting_blood_gluc | fast_gluc_bld |
+| hist_cor_angio (WHI) | — (no data phvs in DATA_SLOTS) |
+| hist_coronary_bypass | hist_cor_bypg |
+| hist_cvd | cvd |
+| hist_heart_disease | cvd |
+| hist_hrt_failure | hist_heart_failure |
+| hist_hrtdis | cvd |
+| hist_hrtfail | hist_heart_failure |
+| hist_mi_inf | hist_mi |
 | hrt_rt | hrtrt |
+| hyperten | hypertension |
 | insulin_in_blood | insulin_blood |
 | lymphocyte_ct | lympho_ct |
 | mn_art_press | mean_art_press |
 | monocyte_ct | monocyte_ncnc_bld |
 | neutro_ct | neutrophil_ct |
 | rbc | rdbld_ct |
+| stroke_isch_atk | stroke |
+| taking_non_statin_medication | tak_nstat_med |
+| valv_hrtdis | cvd |
 
 ---
 
@@ -171,20 +200,26 @@ Cloned locally at `./NHLBI-BDC-DMC-HV`. Working directory: `priority_variables_t
 BDC-Pilot-Tables/
 ├── WORKPLAN.md
 ├── requirements.txt
-├── NHLBI-BDC-DMC-HV/          # cloned transform repo (not committed)
+├── NHLBI-BDC-DMC-HV/               # cloned transform repo (not committed)
 ├── scripts/
-│   ├── 01_parse_yaml_phvs.py
-│   ├── 02_fetch_counts.py
-│   └── 03_build_table.py
+│   ├── 01_parse_yaml_phvs.py        # parse YAMLs → phv_by_cohort_class.csv
+│   ├── 02_fetch_counts.py           # fetch dbGAP counts → phv_counts.csv
+│   ├── 03_build_table.py            # build before_table.xlsx
+│   ├── 01b_parse_yaml_target_slots.py  # alternate parser (target slots only)
+│   ├── 03b_build_target_table.py       # alternate table (target slots)
+│   └── count_metadata_phvs.py       # count phvs in metadata-only slots per cohort
 ├── data/
 │   ├── phv_by_cohort_class.csv
 │   ├── phv_counts.csv
-│   └── var_report_cache/       # cached dbGAP XML files (not committed)
+│   ├── phv_target_slots.csv         # output of 01b
+│   ├── metadata_phv_counts.csv      # output of count_metadata_phvs.py
+│   └── var_report_cache/            # cached dbGAP XML files (not committed)
 └── tables/
-    └── before_table.xlsx
+    ├── before_table.xlsx
+    └── before_table_target_slots.xlsx
 ```
 
-To regenerate the table from scratch:
+To regenerate the before table from scratch:
 ```bash
 python scripts/01_parse_yaml_phvs.py --repo ./NHLBI-BDC-DMC-HV
 python scripts/02_fetch_counts.py
@@ -212,8 +247,12 @@ Pick 2–3 cohorts × concept combinations and manually count phvs in the source
 - One categorical row and one continuous row per cohort
 
 Completed spot-checks:
-- ARIC FEV1: confirmed 7 phvs (4 measurement + 3 age_at_observation) ✓
+- ARIC FEV1: confirmed phvs match source YAML ✓
 - CARDIA alcohol_servings: confirmed 23 phvs ✓
+- CHS whtbld_ct: identified phv00100487 was in `age_at_observation` (metadata slot), correctly excluded under DATA_SLOTS rule ✓
+- FHS ast_sgot: confirmed phv list matches source YAMLs ✓
+- COPDGene edu_lvl: confirmed phv00568798 (visit-filter in `associated_visit`) correctly excluded under DATA_SLOTS rule ✓
+- WHI slp_ap: n=6,806 is correct — phv00283514 is in `pht006223` (UNC Heart Failure sub-study, 42,283 total rows); consent-group sub-entries correctly skipped ✓
 
 ### 2. Verify zero cells are truly zero
 
