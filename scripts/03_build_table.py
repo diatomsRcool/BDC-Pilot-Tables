@@ -37,8 +37,8 @@ PHV_CSV = Path("data/phv_by_cohort_class.csv")
 COUNTS_CSV = Path("data/phv_counts.csv")
 OUTPUT_XLSX = Path("tables/before_table.xlsx")
 
-# Categorical rows — always appear first and are collapsed by BDCHM class
-CATEGORICAL_ROWS = [
+# Order in which categorical sections appear (each expanded to one row per variable file)
+CATEGORICAL_SECTION_ORDER = [
     "Conditions",
     "Drug Exposures",
     "Procedures",
@@ -63,6 +63,7 @@ EXCLUDE_FROM_CONDITIONS = {"chr_bronchitis", "emphysema", "hypert_trt", "hist_co
 # Concept merges: map non-canonical variable_file names to their canonical name.
 # Both variable files represent the same underlying concept across cohorts.
 CONCEPT_MERGE = {
+    # Continuous variable synonyms
     "alcohol":            "alcohol_servings",
     "basophil_ct":        "basophil_ncnc_bld",
     "eosinophil_ct":      "eosinophil_ncnc_bld",
@@ -74,6 +75,21 @@ CONCEPT_MERGE = {
     "monocyte_ct":        "monocyte_ncnc_bld",
     "neutro_ct":          "neutrophil_ct",
     "rbc":                "rdbld_ct",
+    # Categorical synonyms
+    "blood_clots":                  "ven_thromb",
+    "chd":                          "cvd",
+    "hist_cvd":                     "cvd",
+    "hist_heart_disease":           "cvd",
+    "hist_hrtdis":                  "cvd",
+    "valv_hrtdis":                  "cvd",
+    "hist_hrt_failure":             "hist_heart_failure",
+    "hist_hrtfail":                 "hist_heart_failure",
+    "hist_mi_inf":                  "hist_mi",
+    "hyperten":                     "hypertension",
+    "fam_stroke":                   "stroke",
+    "stroke_isch_atk":              "stroke",
+    "taking_non_statin_medication": "tak_nstat_med",
+    "hist_coronary_bypass":         "hist_cor_bypg",
 }
 
 
@@ -124,18 +140,17 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
     cont_data = merged[merged["row_category"] == "Continuous variables"]
 
     # Deduplicate: a phv may appear in multiple derivation blocks / pht tables.
-    # For categorical rows, deduplicate per (cohort, row_category, phv).
-    # For continuous rows, deduplicate per (cohort, variable_file, phv) so each
-    # concept row gets an independent count of its source phvs.
-    cat_deduped  = cat_data.drop_duplicates(subset=["cohort", "row_category", "phv"])
+    # Deduplicate per (cohort, variable_file, phv) for all rows so each
+    # concept gets an independent count of its source phvs.
+    cat_deduped  = cat_data.drop_duplicates(subset=["cohort", "variable_file", "phv"])
     cont_deduped = cont_data.drop_duplicates(subset=["cohort", "variable_file", "phv"])
 
-    # Aggregate categorical rows by class
+    # Aggregate categorical rows by variable file (one row per concept)
     cat_agg = (
-        cat_deduped.groupby(["cohort", "row_category"])
+        cat_deduped.groupby(["cohort", "row_category", "variable_file"])
         .agg(n_vars=("phv", "nunique"), n_data_pts=("n", "sum"))
         .reset_index()
-        .rename(columns={"row_category": "row_label"})
+        .rename(columns={"variable_file": "row_label"})
     )
 
     # Aggregate continuous rows by variable concept (variable_file)
@@ -148,9 +163,14 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
 
     all_agg = pd.concat([cat_agg, cont_agg], ignore_index=True)
 
-    # Row order: categorical section first, then continuous concepts alphabetically
+    # Row order: each categorical section alphabetically (in section order), then continuous alphabetically
+    cat_section_files = []
+    for section in CATEGORICAL_SECTION_ORDER:
+        section_files = sorted(cat_data[cat_data["row_category"] == section]["variable_file"].unique())
+        cat_section_files.extend(section_files)
+
     cont_concepts = sorted(cont_data["variable_file"].unique())
-    row_order = CATEGORICAL_ROWS + cont_concepts
+    row_order = cat_section_files + cont_concepts
 
     # Pivot to wide format: one column-pair per cohort
     wide_vars = all_agg.pivot(index="row_label", columns="cohort", values="n_vars").fillna(0).astype(int)
@@ -180,7 +200,7 @@ def build_table(phv_df: pd.DataFrame, counts_df: pd.DataFrame):
     table.index.name = "Variable Type"
     table = table.reset_index()
 
-    return table, len(CATEGORICAL_ROWS), cont_concepts
+    return table, len(cat_section_files), cont_concepts
 
 
 # --------------------------------------------------------------------------
@@ -291,7 +311,7 @@ def main():
     table, n_categorical, cont_concepts = build_table(phv_df, counts_df)
 
     print(f"\nTable dimensions: {len(table)} rows x {len(table.columns)} columns")
-    print(f"  Categorical rows: {n_categorical}")
+    print(f"  Categorical concept rows: {n_categorical}")
     print(f"  Continuous concept rows: {len(cont_concepts)}")
     print(f"  Total row: 1")
 
